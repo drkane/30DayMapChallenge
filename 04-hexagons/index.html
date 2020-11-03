@@ -23,6 +23,17 @@ line {
 
 </style>
 <body>
+    <select id="select-file">
+        <option>Select boundaries to show</option>
+    </select>
+    <select id="shape">
+        <option>Hexagon</option>
+        <option>Circle</option>
+    </select>
+    <input type="range" id="radius" name="radius" min="0" max="10" step="0.2" value="4">
+    <input type="range" id="alphaTarget" name="alphaTarget" min="0" max="1" step="0.05" value="0">
+    <input type="range" id="velocityDecay" name="velocityDecay" min="0" max="1" step="0.05" value="0.7">
+    <div id="map"></div>
 <script src="//d3js.org/d3.v5.min.js"></script>
 <script src="//d3js.org/topojson.v1.min.js"></script>
 <script src="https://d3js.org/d3-hexbin.v0.2.min.js"></script>
@@ -32,81 +43,166 @@ function round(p, n) {
     return p % n < n / 2 ? p - (p % n) : p + n - (p % n);
 }
 
-// const CSV_FILE = "data/Middle_Layer_Super_Output_Areas__December_2011__Boundaries_EW_BFC.csv"
-const CSV_FILE = "data/Local_Authority_Districts__May_2020__UK_BUC.csv"
-const HEX_RADIUS = 4;
-const COLUMN_LAT = "LAT"
-const COLUMN_LNG = "LONG"
-const COLUMN_TITLE = "LAD20NM"
-// const COLUMN_TITLE = "MSOA11NM"
-// const COLUMN_ID = "MSOA11CD"
+const FILES = {
+    "Local Authorities": {
+        geojson: "data/Local_Authority_Districts__May_2020__UK_BUC.geojson",
+        column_title: 'LAD20NM'
+    },
+    "CCGs": {
+        geojson: 'data/Clinical_Commissioning_Groups__April_2020__EN_BUC.geojson',
+        column_title: 'ccg20nm'
+    },
+    "Travel to Work Areas": {
+        geojson: 'data/Travel_to_Work_Areas__December_2011__Ultra_Generalised_Clipped_Boundaries_in_United_Kingdom.geojson',
+        column_title: 'TTWA11NM'
+    }
+}
 
-var width = 960,
-    height = 960,
+var width = 600,
+    height = 600,
     resolution = 5;
 
-
-var projection = d3.geoMercator().scale(1600).center([0,56]),
-    path = d3.geoPath().projection(projection),
+var projection = d3.geoMercator(),
     hexbin = d3.hexbin();
-    // force = d3.layout.force().size([width, height]);
 
-var svg = d3.select("body").append("svg")
+var svg = d3.select("#map").append("svg")
     .attr("width", width)
     .attr("height", height);
 
-var div = d3.select("body").append("div")	
+var div = d3.select("#map").append("div")	
     .attr("class", "tooltip")				
     .style("opacity", 0)
     .style("position", "absolute");
 
-d3.csv(CSV_FILE).then(function(las){
-    hexbin.radius(HEX_RADIUS);
-    const nodes = las.map(function(d) {
-        lat_lng = projection([d[COLUMN_LNG], d[COLUMN_LAT]]);
-        return {
-            x: lat_lng[0],
-            y: lat_lng[1],
-            title: d[COLUMN_TITLE],
-        }
-    });
+var select = d3.select("#select-file")
+    .selectAll("myOptions")
+    .data(Object.keys(FILES))
+    .enter()
+    .append('option')
+    .text(function (d) { console.log(d); return d; }) // text showed in the menu
+    .attr("value", function (d) { return d; }) // corresponding value returned by the button
 
-    var nodes_display = svg.selectAll("path.area")
-        .data(nodes)
-        .enter()
-        .append("path")
-        .style("fill", "#ff0000")
-        .style("stroke", "#ff0000")
-        .attr("transform", function(d) { return "translate(" + d.x + "," + d.y + ")"; })
-        .attr("d", hexbin.hexagon())
+function updateData(){
 
-    function ticked() {
-        nodes_display
-            .attr("transform", function(d) {
-                var x = round(Math.max(HEX_RADIUS, Math.min(width - HEX_RADIUS, d.x)), resolution);
-                var y = round(Math.max(HEX_RADIUS, Math.min(height - HEX_RADIUS, d.y)), resolution);
-                return "translate(" + d.x + "," + d.y + ")";
-            })
-            .attr("d", hexbin.hexagon())
-            .on("mouseover", function(d) {		
-                div.transition()		
-                    .duration(200)		
-                    .style("opacity", .9);		
-                div.html(d.title)
-                    .style("left", (d3.event.pageX) + "px")		
-                    .style("top", (d3.event.pageY - 28) + "px");
-                });
+    svg.selectAll("*").remove();
+
+    var selectedOption = d3.select('#select-file').property("value");
+    var shapeType = d3.select('#shape').property("value");
+    var hex_radius = d3.select('#radius').property("valueAsNumber");
+    var alphaTarget = d3.select('#alphaTarget').property("valueAsNumber");
+    var velocityDecay = d3.select('#velocityDecay').property("valueAsNumber");
+    var data = FILES[selectedOption];
+    if(!data){
+        return;
     }
     
-    const simulation = d3.forceSimulation(nodes)
-        .alphaTarget(0)
-        .velocityDecay(0.7)
-        // .force("x", d3.forceX().strength(0.01))
-        // .force("y", d3.forceY().strength(0.01))
-        .force("collide", d3.forceCollide().radius(HEX_RADIUS).iterations(3))
-        .force('charge', d3.forceManyBody().strength(0.01))
-        .on("tick", ticked);
+    function updateMap(geojson) {
+        // reproject to fit the data
+        projection.fitSize([width, height], geojson);
 
-});
+        var geoGenerator = d3.geoPath()
+            .projection(projection);
+        var u = svg
+            .selectAll('path')
+            .data(geojson.features)
+            .enter()
+            .append('path')
+            .attr('d', geoGenerator);
+
+        const nodes = geojson.features.map((f) => {
+            var x_y = geoGenerator.centroid(f);
+            var lat_lng = projection.invert(x_y);
+            return {
+                x: x_y[0],
+                y: x_y[1],
+                lat: lat_lng[0],
+                lng: lat_lng[1],
+                title: f.properties[data.column_title],
+            }
+        });
+
+        if (shapeType == "Hexagon"){
+            hexbin.radius(hex_radius);
+            var nodes_display = svg.selectAll("path.area")
+                .data(nodes)
+                .enter()
+                .append("path")
+                .style("fill", "#ff0000")
+                .style("stroke", "#ff0000")
+                .attr("transform", function(d) { return "translate(" + d.x + "," + d.y + ")"; })
+                .attr("d", hexbin.hexagon())
+
+            function ticked() {
+                nodes_display
+                    .attr("transform", function(d) {
+                        // var x = round(Math.max(hex_radius, Math.min(width - hex_radius, d.x)), hex_radius);
+                        // var y = round(Math.max(hex_radius, Math.min(height - hex_radius, d.y)), hex_radius);
+                        return "translate(" + d.x + "," + d.y + ")";
+                    })
+                    .attr("d", hexbin.hexagon())
+                    .on("mouseover", function(d) {		
+                        div.transition()		
+                            .duration(200)		
+                            .style("opacity", .9);		
+                        div.html(d.title)
+                            .style("left", (d3.event.pageX) + "px")		
+                            .style("top", (d3.event.pageY - 28) + "px");
+                        });
+            }
+            
+        } else {
+
+            var nodes_display = svg.selectAll("circle")
+                .data(nodes)
+                .enter()
+                .append("circle")
+                .attr("cx", function (d) { return d.x; })
+                .attr("cy", function (d) { return d.y; })
+                .attr("r", hex_radius)
+                .style("fill", "#ff0000");
+
+            function ticked() {
+                nodes_display
+                    .attr("cx", function (d) { return d.x; })
+                    .attr("cy", function (d) { return d.y; })
+                    .on("mouseover", function(d) {		
+                        div.transition()		
+                            .duration(200)		
+                            .style("opacity", .9);		
+                        div.html(d.title)
+                            .style("left", (d3.event.pageX) + "px")		
+                            .style("top", (d3.event.pageY - 28) + "px");
+                        });
+            }
+
+        }
+
+        
+        const simulation = d3.forceSimulation(nodes)
+            .alphaTarget(alphaTarget)
+            .velocityDecay(velocityDecay)
+            // .force("x", d3.forceX().strength(0.01))
+            // .force("y", d3.forceY().strength(0.01))
+            .force("collide", d3.forceCollide().radius(hex_radius).iterations(3))
+            .force('charge', d3.forceManyBody().strength(0.01))
+            .on("tick", ticked);
+
+    };
+
+    if(!data.data){    
+        d3.json(data.geojson).then(function(geojson){
+            updateMap(geojson);
+            data.data = geojson;
+        })
+    } else {
+        updateMap(data.data);
+    }
+};
+
+d3.select("#select-file").on("change", updateData);
+d3.select("#shape").on("change", updateData);
+d3.select("#radius").on("change", updateData);
+d3.select("#alphaTarget").on("change", updateData);
+d3.select("#velocityDecay").on("change", updateData);
 
 </script>
